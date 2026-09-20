@@ -18,6 +18,9 @@
 #include <stdio.h>
 #include <time.h>
 
+
+#define FREE(p) { free(p); p = NULL; }
+
 /* Size of Buffer Array */
 #define BUFFER_SIZE 1024
 
@@ -49,7 +52,7 @@ char* base64_encode(unsigned char* plain) {
 
     char counts = 0;
     char buffer[3];
-    char* cipher = malloc(strlen((char *) plain) * 4 / 3 + 4);
+    char* cipher = (char *) malloc(strlen((char *) plain) * 4 / 3 + 4);
     int i = 0, c = 0;
 
     for(i = 0; plain[i] != '\0'; i++) {
@@ -142,172 +145,109 @@ void send_close_frame(int fd) {
 }
 
 void handleHTTPRequest(int fd) {
-  char buffer[BUFFER_SIZE + 1] = {0};
+  const int buffer_size = 2400;
+  char buffer[buffer_size + 1] = {0};
   int length = 0;
-  int j = 0;
-  unsigned int payload_len = 0;
 
-  char client_ws_key[25] = {0};
-  char payload_buf[256] = {0};
+  const int path_size = 1024;
+  char filepath[path_size + 1] = {0};
+  char requestPath[path_size + 1] = {0};
+
+  const int password_size = 1024;
+  char password[password_size + 1] = {0};
+  char newPassword[password_size + 1] = {0};
+
+  clock_t start, end;
+  double cpu_time_used;
+
+  start = clock();
+
+  // Characters
 
   unsigned char newChar;
   unsigned char lastChar = 0;
-  char masking_key[4] = {0};
 
-  bool gotGet = false, gotHost = false, gotUpgrade = false,
-       gotConnection = false, gotKey = false, gotOrigin = false,
-       gotProtocol = false, gotVersion = false, isWebSocket = false,
-       gotCloseFrameHeader = false, gotPayloadLen = false, gotMaskingKey = false,
-       gotNormalClosure = false;
+  char client_key[25] = {0};
+
+  bool gotGet = false;
+  bool gotHost = false;
+  bool gotUpgrade = false;
+  bool gotConnection = false;
+  bool gotKey = false;
+  bool gotVersion = false;
+  bool gotExtensions = false;
+  bool gotCRLF = false;
 
   // Read the HTTP request from the client
   size_t bytes_read;
   while ((bytes_read = read(fd, &newChar, sizeof(newChar))) > 0) {
-    // printf("%c", newChar);
-    printf("Buffer: %s\n\n", buffer);
+    printf("%c", newChar);
     if (newChar == ' ') {
-      if (!strcmp("GET", buffer)) {
+      if (!strncmp("GET", buffer, 3)) {
         gotGet = true;
-        bzero(buffer, BUFFER_SIZE);
+        bzero(buffer, buffer_size);
         length = 0;
-        // fprintf(stdout, "\ngotGet\n");
       }
-      // else if (!strncmp("Host:", buffer, 5)) {
-      else if (strstr(buffer, "Host:")) {
+      else if (!strncmp("Host:", buffer, 13)) {
         gotHost = true;
-        bzero(buffer, BUFFER_SIZE);
+        bzero(buffer, buffer_size);
         length = 0;
-        // fprintf(stdout, "gotHost\n");
       }
-      // else if (!strncmp("Upgrade:", buffer, 8)) {
-      else if (strstr(buffer, "Upgrade:")) {
+      else if (!strncmp("Upgrade:", buffer, 5)) {
         gotUpgrade = true;
-        bzero(buffer, BUFFER_SIZE);
+        bzero(buffer, buffer_size);
         length = 0;
-        // fprintf(stdout, "\ngotUpgrade\n");
       }
-      // else if (!strncmp("Connection:", buffer, 11)) {
-      else if (strstr(buffer, "Connection:")) {
+      else if (!strncmp("Connection:", buffer, 11)) {
         gotConnection = true;
-        bzero(buffer, BUFFER_SIZE);
+        bzero(buffer, buffer_size);
         length = 0;
-        // fprintf(stdout, "\ngotConnection\n");
       }
-      // else if (!strncmp("Sec-WebSocket-Key:", buffer, 18)) {
-      else if (strstr(buffer, "Sec-WebSocket-Key:")) {
+      else if (!strncmp("Sec-WebSocket-Key:", buffer, 18)) {
         gotKey = true;
-        bzero(buffer, BUFFER_SIZE);
-        length = 0;
-        // fprintf(stdout, "\ngotKey\n");
-      }
-      // else if (!strncmp("Origin:", buffer, 7) & gotKey) {
-      else if (strstr(buffer, "Origin:") && gotKey) {
-        gotOrigin = true;
-        // fprintf(stdout, "\ngotOrigin\n");
-      }
-      else if (!strncmp("Sec-WebSocket-Protocol:", buffer, 23)) {
-        gotProtocol = true;
-        // fprintf(stdout, "\ngotProtocol\n");
+        fprintf(stdout, "%s\n", buffer);
+        bzero(buffer, buffer_size);
       }
       else if (!strncmp("Sec-WebSocket-Version:", buffer, 22)) {
         gotVersion = true;
-        // fprintf(stdout, "\ngotVersion\n");
+        bzero(buffer, buffer_size);
+      }
+      else if (!strncmp("Sec-WebSocket-Extensions:", buffer, 25)) {
+        gotExtensions = true;
+        bzero(buffer, buffer_size);
+      }
+      else if (gotGet) {
+        buffer[length] = '\0';
+        strncpy(requestPath, buffer, 1025);
+        gotGet = false;
       }
     }
-    else if (newChar == (0x80 | WS_OPCODE_CLOSE)) {
-      gotCloseFrameHeader = true;
-    }
-    else if (gotCloseFrameHeader && (newChar & 0x80)) {
-      payload_len = newChar & 0x7F;
-      gotPayloadLen = true;
-
-      if (payload_len == 0) {
-        gotCloseFrameHeader = false;
-        gotPayloadLen = false;
-        gotMaskingKey = false;
-        payload_len = 0;
-        bzero(masking_key, 4);
+    else if (newChar == '\n' && lastChar == '\r') {
+      if (gotKey && !gotVersion && !gotGet) {
+        strlcpy(client_key, buffer, 24);
       }
-      else if (payload_len == 1) {
-        fprintf(stderr, "Web Socket Close Frame Protocol Error detected: Close frame payload length must be at least 2 bytes\n");
-        gotCloseFrameHeader = false;
-        gotPayloadLen = false;
-        gotMaskingKey = false;
-        payload_len = 0;
-        bzero(masking_key, 4);
+      bzero(buffer, buffer_size);
+      length = 0;
+      if (gotCRLF) {
+        break;
       }
-    }
-    else if (gotCloseFrameHeader && gotPayloadLen) {
-      if (j == 4) {
-        strncpy(masking_key, buffer, 4);
-        gotMaskingKey = true;
-        j = 0;
-        bzero(buffer, BUFFER_SIZE);
-      }
-      else {
-        j++;
-      }
-    }
-    else if (gotCloseFrameHeader && gotPayloadLen && gotMaskingKey) {
-      for (size_t a = 0; a < payload_len; a++) {
-        payload_buf[a] = payload_buf[a] ^ masking_key[a % 4];
-      }
-    }
-    else if (gotCloseFrameHeader && gotPayloadLen && gotMaskingKey && payload_buf[0] != 0) {
-      for (int a = 0; a < payload_len; a++) {
-        payload_buf[a] = htons(payload_buf[a]);
-      }
-
-      uint16_t value_be = (payload_buf[0] << 8) | payload_buf[1];
-      if (value_be != NORMAL_CLOSURE) {
-        fprintf(stderr, "Web Socket Close Frame Protocol Error detected: Payload header is not status code 1000\n");
-        gotCloseFrameHeader = false;
-        gotPayloadLen = false;
-        gotMaskingKey = false;
-        payload_len = 0;
-        bzero(masking_key, 4);
-        bzero(payload_buf, payload_len);
-      }
-      gotNormalClosure = true;
-    }
-    else if (gotCloseFrameHeader && gotPayloadLen && gotMaskingKey && gotNormalClosure) {
-      fprintf(stdout, "Sending Close Frame...\n");
-      send_close_frame(fd);
-      return;
+      gotCRLF = true;
     }
     else {
-      if (gotKey) {
-        if (newChar == '\r') {
-          strncpy(client_ws_key, buffer, 24);
-          bzero(buffer, BUFFER_SIZE);
-          j = 0;
-          break;
-        }
-        client_ws_key[j++] = newChar;
+      lastChar = newChar;
+      if (newChar != '\r') {
+        gotCRLF = false;
       }
-      else if (gotUpgrade && newChar == '\r') {
-        if (!strncmp(buffer, "websocket", 9)) {
-          isWebSocket = true;
-        }
-        else {
-          gotUpgrade = false;
-        }
-      }
-      else if (gotGet && gotHost && gotUpgrade && gotConnection && gotKey && gotVersion) {
-        fprintf(stdout, "Responding to client with opening handshake...\n");
-        server_side_handshake(client_ws_key, fd);
-        gotGet = false;
-        gotUpgrade = false;
-        gotConnection = false;
-        gotKey = false;
-        gotVersion = false;
-      }
-      else {
-        lastChar = newChar;
-        buffer[length] = newChar;
-        length++;
-      }
+      buffer[length] = newChar;
+      length++;
     }
+  }
+
+  puts("END REACHED");
+  if (gotHost && gotUpgrade && gotConnection && gotKey && gotVersion && gotExtensions) {
+    fprintf(stdout, "Client key: %s\n", client_key);
+    fprintf(stdout, "HTTP PACKET RECEIVED\nSENDING RESPONSE BACK\n");
+
   }
 }
 
