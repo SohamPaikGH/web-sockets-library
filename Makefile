@@ -8,5 +8,8 @@ all: $(SERVER)
 $(SERVER): ws_server.c
 	$(CC) $(FLAGS) -o $(SERVER) ws_server.c
 
+run:
+	./ws_server
+
 clean:
 	rm -rf $(SERVER)

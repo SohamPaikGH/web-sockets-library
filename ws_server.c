@@ -98,6 +98,7 @@ void print_dec(uint8_t num) {
 }
 
 char *generate_server_ws_key(const char *client_ws_key) {
+  //fprintf(stdout, "Hashing %s\n", client_ws_key);
   char server_ws_key[128] = {0};
   strcpy(server_ws_key, client_ws_key);
   strcat(server_ws_key, GUID);
@@ -107,6 +108,7 @@ char *generate_server_ws_key(const char *client_ws_key) {
   SHA1((const unsigned char *) server_ws_key, strlen(server_ws_key), hash);
 
   char *encoded = base64_encode((unsigned char *) hash);
+  //fprintf(stdout, "Encoded: %s\n", encoded);
 
   return encoded;
 }
@@ -120,7 +122,7 @@ void server_side_handshake(const char *client_ws_key, int fd) {
   char server_opening_handshake[256] = {0};
 
   snprintf(server_opening_handshake, sizeof(server_opening_handshake), 
-  "HTTP/1.1 101 Switching Protocols"
+  "HTTP/1.1 101 Switching Protocols\r\n"
   "Host: server.example.com\r\n"
   "Upgrade: websocket\r\n"
   "Connection: Upgrade\r\n"
@@ -128,6 +130,7 @@ void server_side_handshake(const char *client_ws_key, int fd) {
   "\r\n\r\n",
   server_ws_key);
 
+  //fprintf(stdout, "%s\n", server_opening_handshake);
   send(fd, server_opening_handshake, strlen(server_opening_handshake), MSG_DONTWAIT);
   free(server_ws_key);
 }
@@ -167,7 +170,7 @@ void handleHTTPRequest(int fd) {
   unsigned char newChar;
   unsigned char lastChar = 0;
 
-  char client_key[25] = {0};
+  char client_key[64] = {0};
 
   bool gotGet = false;
   bool gotHost = false;
@@ -180,8 +183,12 @@ void handleHTTPRequest(int fd) {
 
   // Read the HTTP request from the client
   size_t bytes_read;
+  size_t i = 0;
   while ((bytes_read = read(fd, &newChar, sizeof(newChar))) > 0) {
-    printf("%c", newChar);
+    if (gotKey && !gotVersion && !gotExtensions)
+      client_key[i++] = newChar;
+
+    fprintf(stdout, "%c", newChar);
     if (newChar == ' ') {
       if (!strncmp("GET", buffer, 3)) {
         gotGet = true;
@@ -205,7 +212,6 @@ void handleHTTPRequest(int fd) {
       }
       else if (!strncmp("Sec-WebSocket-Key:", buffer, 18)) {
         gotKey = true;
-        fprintf(stdout, "%s\n", buffer);
         bzero(buffer, buffer_size);
       }
       else if (!strncmp("Sec-WebSocket-Version:", buffer, 22)) {
@@ -216,16 +222,8 @@ void handleHTTPRequest(int fd) {
         gotExtensions = true;
         bzero(buffer, buffer_size);
       }
-      else if (gotGet) {
-        buffer[length] = '\0';
-        strncpy(requestPath, buffer, 1025);
-        gotGet = false;
-      }
     }
     else if (newChar == '\n' && lastChar == '\r') {
-      if (gotKey && !gotVersion && !gotGet) {
-        strlcpy(client_key, buffer, 24);
-      }
       bzero(buffer, buffer_size);
       length = 0;
       if (gotCRLF) {
@@ -238,16 +236,16 @@ void handleHTTPRequest(int fd) {
       if (newChar != '\r') {
         gotCRLF = false;
       }
-      buffer[length] = newChar;
-      length++;
+      buffer[length++] = newChar;
     }
   }
 
-  puts("END REACHED");
+  // puts("END REACHED");
   if (gotHost && gotUpgrade && gotConnection && gotKey && gotVersion && gotExtensions) {
-    fprintf(stdout, "Client key: %s\n", client_key);
-    fprintf(stdout, "HTTP PACKET RECEIVED\nSENDING RESPONSE BACK\n");
-
+    /* client_key contains the Sec-WebSocket-Version field, so we need to remove it */
+    fprintf(stdout, "\nClient key: %s\n", client_key);
+    // fprintf(stdout, "HTTP PACKET RECEIVED\nSENDING RESPONSE BACK\n");
+    server_side_handshake(client_key, fd);
   }
 }
 
