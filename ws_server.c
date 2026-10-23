@@ -108,7 +108,7 @@ char *generate_server_ws_key(const char *client_ws_key) {
   SHA1((const unsigned char *) server_ws_key, strlen(server_ws_key), hash);
 
   char *encoded = base64_encode((unsigned char *) hash);
-  //fprintf(stdout, "Encoded: %s\n", encoded);
+  fprintf(stdout, "Encoded: %s\n", encoded);
 
   return encoded;
 }
@@ -130,7 +130,7 @@ void server_side_handshake(const char *client_ws_key, int fd) {
   "\r\n\r\n",
   server_ws_key);
 
-  //fprintf(stdout, "%s\n", server_opening_handshake);
+  fprintf(stdout, "%s\n", server_opening_handshake);
   send(fd, server_opening_handshake, strlen(server_opening_handshake), MSG_DONTWAIT);
   free(server_ws_key);
 }
@@ -145,6 +145,30 @@ void send_close_frame(int fd) {
   frame[3] = NORMAL_CLOSURE & 0xFF;
 
   send(fd, frame, sizeof(frame), MSG_DONTWAIT);
+}
+
+const char *extract_field_from_request(const char *haystack, const char *needle) {
+  char field[128] = {0};
+  char *ptr = strstr(haystack, needle);
+  size_t field_len = strlen(needle);
+  size_t length = 0;
+
+  if (ptr == NULL) {
+    fprintf(stderr, "Error: Could not find field \"%s\" in HTTP request\n", needle);
+    return NULL;
+  }
+
+  ptr += field_len;
+  while (*ptr == ' ') ptr++;
+
+  while (*ptr != '\r' && *ptr != '\n') {
+    field[length++] = *ptr;
+    ptr++;
+  }
+
+  field[length] = '\0';
+
+  return strdup(field);
 }
 
 void handleHTTPRequest(int fd) {
@@ -170,7 +194,7 @@ void handleHTTPRequest(int fd) {
   unsigned char newChar;
   unsigned char lastChar = 0;
 
-  char client_key[64] = {0};
+  const char *client_key = NULL;
 
   bool gotGet = false;
   bool gotHost = false;
@@ -185,64 +209,41 @@ void handleHTTPRequest(int fd) {
   size_t bytes_read;
   size_t i = 0;
   while ((bytes_read = read(fd, &newChar, sizeof(newChar))) > 0) {
-    if (gotKey && !gotVersion && !gotExtensions)
-      client_key[i++] = newChar;
-
-    fprintf(stdout, "%c", newChar);
-    if (newChar == ' ') {
-      if (!strncmp("GET", buffer, 3)) {
-        gotGet = true;
-        bzero(buffer, buffer_size);
-        length = 0;
-      }
-      else if (!strncmp("Host:", buffer, 13)) {
-        gotHost = true;
-        bzero(buffer, buffer_size);
-        length = 0;
-      }
-      else if (!strncmp("Upgrade:", buffer, 5)) {
-        gotUpgrade = true;
-        bzero(buffer, buffer_size);
-        length = 0;
-      }
-      else if (!strncmp("Connection:", buffer, 11)) {
-        gotConnection = true;
-        bzero(buffer, buffer_size);
-        length = 0;
-      }
-      else if (!strncmp("Sec-WebSocket-Key:", buffer, 18)) {
-        gotKey = true;
-        bzero(buffer, buffer_size);
-      }
-      else if (!strncmp("Sec-WebSocket-Version:", buffer, 22)) {
-        gotVersion = true;
-        bzero(buffer, buffer_size);
-      }
-      else if (!strncmp("Sec-WebSocket-Extensions:", buffer, 25)) {
-        gotExtensions = true;
-        bzero(buffer, buffer_size);
-      }
-    }
-    else if (newChar == '\n' && lastChar == '\r') {
-      bzero(buffer, buffer_size);
-      length = 0;
-      if (gotCRLF) {
-        break;
-      }
-      gotCRLF = true;
-    }
-    else {
-      lastChar = newChar;
-      if (newChar != '\r') {
-        gotCRLF = false;
-      }
-      buffer[length++] = newChar;
-    }
+    buffer[length++] = newChar;
   }
 
-  // puts("END REACHED");
+  puts("END REACHED");
+  fprintf(stdout, "Buffer: %s", buffer);
+  if (strstr(buffer, "Sec-WebSocket-Key")) {
+    gotGet = true;
+  }
+
+  if (strstr(buffer, "Host:")) {
+    gotHost = true;
+  }
+
+  if (strstr(buffer, "Upgrade:")) {
+    gotUpgrade = true;
+  }
+
+  if (strstr(buffer, "Connection:")) {
+    gotConnection = true;
+  }
+
+  if (strstr(buffer, "Sec-WebSocket-Key:")) {
+    gotKey = true;
+  }
+
+  if (strstr(buffer, "Sec-WebSocket-Version:")) {
+    gotVersion = true;
+  }
+
+  if (strstr(buffer, "Sec-WebSocket-Extensions:")) {
+    gotExtensions = true;
+  }
+
   if (gotHost && gotUpgrade && gotConnection && gotKey && gotVersion && gotExtensions) {
-    /* client_key contains the Sec-WebSocket-Version field, so we need to remove it */
+    client_key = extract_field_from_request(buffer, "Sec-WebSocket-Key:");
     fprintf(stdout, "\nClient key: %s\n", client_key);
     // fprintf(stdout, "HTTP PACKET RECEIVED\nSENDING RESPONSE BACK\n");
     server_side_handshake(client_key, fd);
