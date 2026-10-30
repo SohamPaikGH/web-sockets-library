@@ -11,6 +11,7 @@
 #include <float.h>
 #include <openssl/evp.h>
 #include <openssl/sha.h>
+#include <poll.h>
 #include <pthread.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -43,6 +44,31 @@
 #define ENDPOINT_GOING_AWAY 0x03E9
 #define PROTOCOL_ERROR 0x03EA
 #define BAD_DATA 0x03EB
+
+/* Timeout value for poll() to ensure non-blocking IO */
+#define TIMEOUT 0
+#define MAX_SESSIONS 2
+
+/* Enum type and structure for tracking client session info */
+typedef enum {
+  STATE_OPENING,
+  STATE_STREAMING,
+  STATE_CLOSING
+} connection_state_t;
+
+typedef struct {
+  int fd;
+  connection_state_t state;
+} client_session_t;
+
+client_session_t *sessions = NULL;
+
+/* Structure for tracking all active connections
+ * NOTE: First element is reserved for server socket
+ */
+struct pollfd *fds;
+
+/* Base 64 Character Mapping */
 
 char base46_map[] = {'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P',
                      'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', 'a', 'b', 'c', 'd', 'e', 'f',
@@ -266,14 +292,23 @@ void handleHTTPRequest(int fd) {
     fprintf(stderr, "Got all fields\n");
     extract_field_from_request(client_key, buffer, "Sec-WebSocket-Key:");
     fprintf(stderr, "Client Key: %s\n", client_key);
-    // fprintf(stdout, "HTTP PACKET RECEIVED\nSENDING RESPONSE BACK\n");
     server_side_handshake(client_key, fd);
   }
 
-
+  fprintf(stderr, "Handshake completed\n");
 }
 
 int main() {
+  /* Allocate heap memory for global arrays */
+  sessions = (client_session_t *) malloc(sizeof(client_session_t) * MAX_SESSIONS);
+  fds = (struct pollfd *) malloc(sizeof(struct pollfd) * MAX_SESSIONS);
+
+  /* Initialize fds array */
+  for (int i = 0; i < MAX_SESSIONS; i++) {
+    fds[i].fd = -1;
+    fds[i].events = 0;
+    fds[i].revents = 0;
+  }
 
   int port = 1025;
   int queue_length = 5;
@@ -306,23 +341,67 @@ int main() {
     exit(-1);
   }
 
-  while (1) {
-    struct sockaddr_in clientAddress;
-    int addr_len = sizeof(clientAddress);
-    int slaveSocket = accept(masterSocket, (struct sockaddr *) &clientAddress,
-                             (socklen_t *) &addr_len);
+  fds[0].fd = masterSocket;
+  fds[0].events = POLLIN;
+  fds[0].revents = 0;
 
-    if (slaveSocket < 0) {
-      perror("accept");
-      exit(-1);
+  while (1) {
+    int ready = poll(fds, MAX_SESSIONS, TIMEOUT);
+    if (ready) fprintf(stderr, "%d file descriptor(s) ready\n", ready);
+
+    for (int i = 0; i < MAX_SESSIONS; i++) {
+      int slaveSocket = -1;
+      if (fds[i].revents & POLLIN) {
+        if (fds[i].fd == masterSocket) {
+          /* New incoming connection
+           * Accept incoming connection
+           */
+          struct sockaddr_in clientAddress;
+          int addr_len = sizeof(clientAddress);
+          slaveSocket = accept(masterSocket, (struct sockaddr *) &clientAddress,
+                                   (socklen_t *) &addr_len);
+
+          fprintf(stdout, "Accept new connection\n");
+
+          if (slaveSocket < 0) {
+            perror("accept");
+            continue;
+          }
+
+          fprintf(stderr, "New connection fd: %d\n", slaveSocket);
+
+          /* Allocate new entry in the fds array */
+          int j;
+          for (j = i + 1; j < MAX_SESSIONS; j++) {
+            if (fds[j].fd == -1) {
+              fds[j].fd = slaveSocket;
+              fprintf(stderr, "Placed file descriptor %d at fds[%d]\n", slaveSocket, j);
+              break;
+            }
+          }
+          handleHTTPRequest(slaveSocket);
+          send_close_frame(slaveSocket);
+          shutdown(slaveSocket, SHUT_RDWR);
+          close(slaveSocket);
+          fds[j].fd = -1;
+        }
+      }
+      /*else {
+        if (fds[i].fd != -1) {
+          slaveSocket = fds[i].fd;
+          fprintf(stderr, "New connection fd: %d\n", slaveSocket);
+          send_close_frame(slaveSocket);
+          sleep(10);
+          shutdown(slaveSocket, SHUT_RDWR);
+          close(slaveSocket);
+          fds[i].fd = -1;
+        }
+      }*/
     }
 
-    handleHTTPRequest(slaveSocket);
-    send_close_frame(slaveSocket);
-    sleep(10);
-    shutdown(slaveSocket, SHUT_RDWR);
-    close(slaveSocket);
   }
+
+  free(sessions);
 
   return 0;
 }
