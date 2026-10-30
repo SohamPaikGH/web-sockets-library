@@ -210,7 +210,9 @@ void handleHTTPRequest(int fd) {
   size_t i = 0;
   timespec_get(&start, TIME_UTC);
   while ((bytes_read = read(fd, &newChar, 1))) {
-    if (length >= sizeof(buffer) - 1) {
+    if (length >= buffer_size) {
+      fprintf(stderr, "ERROR: Packet too large\n");
+      exit(-1); 
       break;
     }
 
@@ -316,7 +318,8 @@ int main() {
     }
 
     handleHTTPRequest(slaveSocket);
-
+    send_close_frame(slaveSocket);
+    sleep(10);
     shutdown(slaveSocket, SHUT_RDWR);
     close(slaveSocket);
   }
