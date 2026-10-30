@@ -1,5 +1,5 @@
 CC=gcc
-FLAGS=-I/opt/homebrew/opt/openssl@3/include -L/opt/homebrew/opt/openssl@3/lib -lssl -lcrypto
+FLAGS=-I/opt/homebrew/opt/openssl@3/include -L/opt/homebrew/opt/openssl@3/lib -lssl -lcrypto -g
 
 SERVER=ws_server
 

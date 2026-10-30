@@ -9,6 +9,7 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <float.h>
+#include <openssl/evp.h>
 #include <openssl/sha.h>
 #include <pthread.h>
 #include <stdbool.h>
@@ -97,42 +98,44 @@ void print_dec(uint8_t num) {
   putchar('\n');
 }
 
-char *generate_server_ws_key(const char *client_ws_key) {
+void generate_server_ws_key(const char *client_ws_key, const char *output) {
   //fprintf(stdout, "Hashing %s\n", client_ws_key);
   char server_ws_key[128] = {0};
-  strcpy(server_ws_key, client_ws_key);
+  size_t client_ws_key_len = strlen(client_ws_key);
+  strncpy(server_ws_key, client_ws_key, client_ws_key_len);
   strcat(server_ws_key, GUID);
 
   /* Generate SHA-1 hash of server web socket key */
   unsigned char hash[SHA_DIGEST_LENGTH];
   SHA1((const unsigned char *) server_ws_key, strlen(server_ws_key), hash);
 
-  char *encoded = base64_encode((unsigned char *) hash);
-  fprintf(stdout, "Encoded: %s\n", encoded);
+  fprintf(stdout, "Hash: %s\n", hash);
+  //char *encoded = base64_encode(hash);
+  EVP_EncodeBlock((unsigned char *) output, hash, sizeof(hash));
+  fprintf(stdout, "Encoded: %s\n", output);
 
-  return encoded;
+  //return encoded;
 }
 
 void server_side_handshake(const char *client_ws_key, int fd) {
-  char *server_ws_key = generate_server_ws_key(client_ws_key);
-  if (!server_ws_key) {
-    write400(fd, "text");
-    return;
-  }
-  char server_opening_handshake[256] = {0};
+  fprintf(stderr, "Client Key: %s\n", client_ws_key);
+  char server_ws_key[64] = {0};
+  generate_server_ws_key(client_ws_key, server_ws_key);
 
-  snprintf(server_opening_handshake, sizeof(server_opening_handshake), 
+  fprintf(stderr, "Server Web Socket Key: %s\n", server_ws_key);
+  char server_resp[256] = {0};
+
+  snprintf(server_resp, sizeof(server_resp), 
   "HTTP/1.1 101 Switching Protocols\r\n"
   "Host: server.example.com\r\n"
   "Upgrade: websocket\r\n"
   "Connection: Upgrade\r\n"
   "Sec-WebSocket-Accept: %s\r\n"
-  "\r\n\r\n",
+  "\r\n",
   server_ws_key);
 
-  fprintf(stdout, "%s\n", server_opening_handshake);
-  send(fd, server_opening_handshake, strlen(server_opening_handshake), MSG_DONTWAIT);
-  free(server_ws_key);
+  fprintf(stderr, "Server Response:\n\n%s\n", server_resp);
+  send(fd, server_resp, strlen(server_resp), 0);
 }
 
 void send_close_frame(int fd) {
@@ -147,18 +150,20 @@ void send_close_frame(int fd) {
   send(fd, frame, sizeof(frame), MSG_DONTWAIT);
 }
 
-const char *extract_field_from_request(const char *haystack, const char *needle) {
-  char field[128] = {0};
-  char *ptr = strstr(haystack, needle);
-  size_t field_len = strlen(needle);
-  size_t length = 0;
+void extract_field_from_request(char *field, const char *haystack, const char *needle) {
 
+  /* Retrieve the location of the needle in the haystack */
+  char *ptr = strstr(haystack, needle);
+
+  /* If the needle is not found, return an error */
   if (ptr == NULL) {
     fprintf(stderr, "Error: Could not find field \"%s\" in HTTP request\n", needle);
-    return NULL;
+    return;
   }
 
-  ptr += field_len;
+  size_t needle_len = strlen(needle);
+  size_t length = 0;
+  ptr += needle_len;
   while (*ptr == ' ') ptr++;
 
   while (*ptr != '\r' && *ptr != '\n') {
@@ -167,8 +172,6 @@ const char *extract_field_from_request(const char *haystack, const char *needle)
   }
 
   field[length] = '\0';
-
-  return strdup(field);
 }
 
 void handleHTTPRequest(int fd) {
@@ -184,17 +187,13 @@ void handleHTTPRequest(int fd) {
   char password[password_size + 1] = {0};
   char newPassword[password_size + 1] = {0};
 
-  clock_t start, end;
-  double cpu_time_used;
-
-  start = clock();
+  struct timespec start, end;
 
   // Characters
-
   unsigned char newChar;
   unsigned char lastChar = 0;
 
-  const char *client_key = NULL;
+  char client_key[128] = {0};
 
   bool gotGet = false;
   bool gotHost = false;
@@ -205,16 +204,26 @@ void handleHTTPRequest(int fd) {
   bool gotExtensions = false;
   bool gotCRLF = false;
 
+
   // Read the HTTP request from the client
   size_t bytes_read;
   size_t i = 0;
-  while ((bytes_read = read(fd, &newChar, sizeof(newChar))) > 0) {
+  timespec_get(&start, TIME_UTC);
+  while ((bytes_read = read(fd, &newChar, 1))) {
+    lastChar = newChar;
     buffer[length++] = newChar;
+    fprintf(stdout, "%c", newChar);
   }
 
+  timespec_get(&end, TIME_UTC);
+
+  long double time_elapsed = (long double) (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) / 1000000000.0;
+  fprintf(stderr, "Total Time Taken: %Lf\n", time_elapsed);
+
+
   puts("END REACHED");
-  fprintf(stdout, "Buffer: %s", buffer);
-  if (strstr(buffer, "Sec-WebSocket-Key")) {
+  // fprintf(stdout, "Buffer: %s", buffer);
+  if (strstr(buffer, "GET")) {
     gotGet = true;
   }
 
@@ -243,11 +252,14 @@ void handleHTTPRequest(int fd) {
   }
 
   if (gotHost && gotUpgrade && gotConnection && gotKey && gotVersion && gotExtensions) {
-    client_key = extract_field_from_request(buffer, "Sec-WebSocket-Key:");
-    fprintf(stdout, "\nClient key: %s\n", client_key);
+    fprintf(stderr, "Got all fields\n");
+    extract_field_from_request(client_key, buffer, "Sec-WebSocket-Key:");
+    fprintf(stderr, "Client Key: %s\n", client_key);
     // fprintf(stdout, "HTTP PACKET RECEIVED\nSENDING RESPONSE BACK\n");
     server_side_handshake(client_key, fd);
   }
+
+
 }
 
 int main() {
