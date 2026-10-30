@@ -210,9 +210,18 @@ void handleHTTPRequest(int fd) {
   size_t i = 0;
   timespec_get(&start, TIME_UTC);
   while ((bytes_read = read(fd, &newChar, 1))) {
+    if (length >= sizeof(buffer) - 1) {
+      break;
+    }
+
     lastChar = newChar;
     buffer[length++] = newChar;
     fprintf(stdout, "%c", newChar);
+
+    if (length >= 4 && buffer[length - 1] == '\n' && buffer[length - 2] == '\r'
+      && buffer[length - 3] == '\n' && buffer[length - 4] == '\r') {
+      break;
+    }
   }
 
   timespec_get(&end, TIME_UTC);
