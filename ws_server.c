@@ -47,7 +47,7 @@
 
 /* Timeout value for poll() to ensure non-blocking IO */
 #define TIMEOUT 0
-#define MAX_SESSIONS 2
+#define MAX_SESSIONS 64
 
 /* Enum type and structure for tracking client session info */
 typedef enum {
@@ -62,6 +62,7 @@ typedef struct {
 } client_session_t;
 
 client_session_t *sessions = NULL;
+int nsessions = 0;
 
 /* Structure for tracking all active connections
  * NOTE: First element is reserved for server socket
@@ -213,11 +214,10 @@ void handleHTTPRequest(int fd) {
   char password[password_size + 1] = {0};
   char newPassword[password_size + 1] = {0};
 
-  struct timespec start, end;
+  // struct timespec start, end;
 
   // Characters
   unsigned char newChar;
-  unsigned char lastChar = 0;
 
   char client_key[128] = {0};
 
@@ -234,7 +234,7 @@ void handleHTTPRequest(int fd) {
   // Read the HTTP request from the client
   size_t bytes_read;
   size_t i = 0;
-  timespec_get(&start, TIME_UTC);
+  // timespec_get(&start, TIME_UTC);
   while ((bytes_read = read(fd, &newChar, 1))) {
     if (length >= buffer_size) {
       fprintf(stderr, "ERROR: Packet too large\n");
@@ -242,7 +242,6 @@ void handleHTTPRequest(int fd) {
       break;
     }
 
-    lastChar = newChar;
     buffer[length++] = newChar;
     fprintf(stdout, "%c", newChar);
 
@@ -252,10 +251,10 @@ void handleHTTPRequest(int fd) {
     }
   }
 
-  timespec_get(&end, TIME_UTC);
+  // timespec_get(&end, TIME_UTC);
 
-  long double time_elapsed = (long double) (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) / 1000000000.0;
-  fprintf(stderr, "Total Time Taken: %Lf\n", time_elapsed);
+  // long double time_elapsed = (long double) (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) / 1000000000.0;
+  // fprintf(stderr, "Total Time Taken: %Lf\n", time_elapsed);
 
 
   puts("END REACHED");
@@ -296,6 +295,23 @@ void handleHTTPRequest(int fd) {
   }
 
   fprintf(stderr, "Handshake completed\n");
+}
+
+client_session_t *get_session(int fd) {
+  client_session_t *session = NULL;
+  for (int i = 0; i < nsessions; i++) {
+    if (sessions[i].fd == fd) {
+      session = &sessions[i];
+      break;
+    }
+  }
+
+  if (!session) {
+    perror("FATAL: No session found\n");
+    exit(-1);
+  }
+
+  return session;
 }
 
 int main() {
@@ -352,53 +368,71 @@ int main() {
     for (int i = 0; i < MAX_SESSIONS; i++) {
       int slaveSocket = -1;
       if (fds[i].revents & POLLIN) {
+        puts("GOT SOMETHING");
         if (fds[i].fd == masterSocket) {
           /* New incoming connection
            * Accept incoming connection
            */
           struct sockaddr_in clientAddress;
+          char clientAddress_string[INET_ADDRSTRLEN];
           int addr_len = sizeof(clientAddress);
           slaveSocket = accept(masterSocket, (struct sockaddr *) &clientAddress,
                                    (socklen_t *) &addr_len);
 
-          fprintf(stdout, "Accept new connection\n");
-
-          if (slaveSocket < 0) {
-            perror("accept");
+          if (!inet_ntop(AF_INET, &clientAddress.sin_addr, clientAddress_string, sizeof(clientAddress_string))) {
+            fprintf(stderr, "Could not print client address\n");
+            close(slaveSocket);
             continue;
           }
 
+          if (slaveSocket < 0) {
+            perror("accept");
+            close(slaveSocket);
+            continue;
+          }
+
+          fprintf(stdout, "Accept new connection from %s\n", clientAddress_string);
           fprintf(stderr, "New connection fd: %d\n", slaveSocket);
 
-          /* Allocate new entry in the fds array */
+          /* Check if number of sessions has been exceeded */
+          if (nsessions == MAX_SESSIONS - 1) {
+            fprintf(stderr, "Max session limit reached\n");
+            close(slaveSocket);
+            continue;
+          }
+
+          /* Allocate new entry in the fds and sessions arrays */
           int j;
-          for (j = i + 1; j < MAX_SESSIONS; j++) {
+          for (j = 0; j < MAX_SESSIONS; j++) {
             if (fds[j].fd == -1) {
               fds[j].fd = slaveSocket;
+              fds[j].events = POLLIN;
+              fds[j].revents = 0;
+              sessions[nsessions].fd = slaveSocket;
+              sessions[nsessions].state = STATE_OPENING;
+              fprintf(stderr, "Created new session, sessions[%d].fd=%d, sessions[%d].state=%d\n", nsessions, sessions[nsessions].fd, nsessions, sessions[nsessions].state);
+              nsessions++;
               fprintf(stderr, "Placed file descriptor %d at fds[%d]\n", slaveSocket, j);
               break;
             }
           }
-          handleHTTPRequest(slaveSocket);
-          send_close_frame(slaveSocket);
-          shutdown(slaveSocket, SHUT_RDWR);
-          close(slaveSocket);
-          fds[j].fd = -1;
+        }
+        else {
+          client_session_t *session = get_session(fds[i].fd);
+          if (session->state == STATE_OPENING) {
+            handleHTTPRequest(fds[i].fd);
+            session->state = STATE_CLOSING;
+          }
+          else if (session->state == STATE_CLOSING) {
+            send_close_frame(fds[i].fd);
+            shutdown(fds[i].fd, SHUT_RDWR);
+            close(fds[i].fd);
+            fds[i].fd = -1;
+            nsessions--;
+          }
         }
       }
-      /*else {
-        if (fds[i].fd != -1) {
-          slaveSocket = fds[i].fd;
-          fprintf(stderr, "New connection fd: %d\n", slaveSocket);
-          send_close_frame(slaveSocket);
-          sleep(10);
-          shutdown(slaveSocket, SHUT_RDWR);
-          close(slaveSocket);
-          fds[i].fd = -1;
-        }
-      }*/
     }
-
   }
 
   free(sessions);
