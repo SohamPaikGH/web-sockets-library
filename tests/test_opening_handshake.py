@@ -18,11 +18,3 @@ async def test_opening_handshake():
             print("Received: ", response, file=sys.stdout)
         except ConnectionClosedOK:
             print("Received 1000 (OK); then sent 1000 (OK)")
-        """
-        finally:
-            await ws.close(code=1000, reason="Test finished")
-        """
-"""
-def test_opening_handshake():
-    asyncio.run(send_opening_handshake())
-"""

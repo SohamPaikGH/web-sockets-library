@@ -69,47 +69,7 @@ int nsessions = 0;
  */
 struct pollfd *fds;
 
-/* Base 64 Character Mapping */
-
-char base46_map[] = {'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P',
-                     'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', 'a', 'b', 'c', 'd', 'e', 'f',
-                     'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v',
-                     'w', 'x', 'y', 'z', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '+', '/'};
-
-char* base64_encode(unsigned char* plain) {
-
-    char counts = 0;
-    char buffer[3];
-    char* cipher = (char *) malloc(strlen((char *) plain) * 4 / 3 + 4);
-    int i = 0, c = 0;
-
-    for(i = 0; plain[i] != '\0'; i++) {
-        buffer[counts++] = plain[i];
-        if(counts == 3) {
-            cipher[c++] = base46_map[buffer[0] >> 2];
-            cipher[c++] = base46_map[((buffer[0] & 0x03) << 4) + (buffer[1] >> 4)];
-            cipher[c++] = base46_map[((buffer[1] & 0x0f) << 2) + (buffer[2] >> 6)];
-            cipher[c++] = base46_map[buffer[2] & 0x3f];
-            counts = 0;
-        }
-    }
-
-    if(counts > 0) {
-        cipher[c++] = base46_map[buffer[0] >> 2];
-        if(counts == 1) {
-            cipher[c++] = base46_map[(buffer[0] & 0x03) << 4];
-            cipher[c++] = '=';
-        } else {                      // if counts == 2
-            cipher[c++] = base46_map[((buffer[0] & 0x03) << 4) + (buffer[1] >> 4)];
-            cipher[c++] = base46_map[(buffer[1] & 0x0f) << 2];
-        }
-        cipher[c++] = '=';
-    }
-
-    cipher[c] = '\0';   /* string padding character */
-    return cipher;
-}
-
+/* Write HTTP 400 message if error occurs during opening handshake */
 void write400(int fd, const char *content_type) {
   write(fd, "HTTP/1.1 400 Bad Request\r\n", 26);
   write(fd, "Server: Durbhash\r\n", 18);
@@ -118,6 +78,7 @@ void write400(int fd, const char *content_type) {
   write(fd, "\r\n\r\n", 4);
 }
 
+/* Print number in little-endian form */
 void print_dec(uint8_t num) {
   for (int i = 7; i >= 0; i--) {
     printf("%d", (num >> i) & 1);
@@ -125,8 +86,9 @@ void print_dec(uint8_t num) {
   putchar('\n');
 }
 
+/* Generate the server's WebSocket key in response to client HTTP opening handshake */
 void generate_server_ws_key(const char *client_ws_key, const char *output) {
-  //fprintf(stdout, "Hashing %s\n", client_ws_key);
+  /* Declare and initialize WebSocket key, copy client key into buffer, and append GUID */
   char server_ws_key[128] = {0};
   size_t client_ws_key_len = strlen(client_ws_key);
   strncpy(server_ws_key, client_ws_key, client_ws_key_len);
@@ -136,22 +98,24 @@ void generate_server_ws_key(const char *client_ws_key, const char *output) {
   unsigned char hash[SHA_DIGEST_LENGTH];
   SHA1((const unsigned char *) server_ws_key, strlen(server_ws_key), hash);
 
-  fprintf(stdout, "Hash: %s\n", hash);
-  //char *encoded = base64_encode(hash);
+  /* Encode hash in base 64 per the official IETF spec */
+  // fprintf(stdout, "Hash: %s\n", hash);
   EVP_EncodeBlock((unsigned char *) output, hash, sizeof(hash));
-  fprintf(stdout, "Encoded: %s\n", output);
-
-  //return encoded;
+  // fprintf(stdout, "Encoded: %s\n", output);
 }
 
+/* Send server side handshake in response to opening handshake from client */
 void server_side_handshake(const char *client_ws_key, int fd) {
-  fprintf(stderr, "Client Key: %s\n", client_ws_key);
+  // fprintf(stderr, "Client Key: %s\n", client_ws_key);
   char server_ws_key[64] = {0};
+
+  /* Generate the server WebSocket key */
   generate_server_ws_key(client_ws_key, server_ws_key);
 
   fprintf(stderr, "Server Web Socket Key: %s\n", server_ws_key);
   char server_resp[256] = {0};
 
+  /* Generate the server's HTTP response */
   snprintf(server_resp, sizeof(server_resp), 
   "HTTP/1.1 101 Switching Protocols\r\n"
   "Host: server.example.com\r\n"
@@ -162,10 +126,14 @@ void server_side_handshake(const char *client_ws_key, int fd) {
   server_ws_key);
 
   fprintf(stderr, "Server Response:\n\n%s\n", server_resp);
+
+  /* Transmit the HTTP response to the client */
   send(fd, server_resp, strlen(server_resp), 0);
 }
 
+/* Send close frame in order to close WebSocket connection */
 void send_close_frame(int fd) {
+  /* Initialize frame to 0 */
   unsigned char frame[4] = {0};
   size_t payload_len = 2;
 
@@ -202,19 +170,9 @@ void extract_field_from_request(char *field, const char *haystack, const char *n
 }
 
 void handleHTTPRequest(int fd) {
-  const int buffer_size = 2400;
-  char buffer[buffer_size + 1] = {0};
+  char buffer[BUFFER_SIZE + 1] = {0};
   int length = 0;
-
-  const int path_size = 1024;
-  char filepath[path_size + 1] = {0};
-  char requestPath[path_size + 1] = {0};
-
-  const int password_size = 1024;
-  char password[password_size + 1] = {0};
-  char newPassword[password_size + 1] = {0};
-
-  // struct timespec start, end;
+  struct timespec start, end;
 
   // Characters
   unsigned char newChar;
@@ -233,10 +191,9 @@ void handleHTTPRequest(int fd) {
 
   // Read the HTTP request from the client
   size_t bytes_read;
-  size_t i = 0;
-  // timespec_get(&start, TIME_UTC);
+  timespec_get(&start, TIME_UTC);
   while ((bytes_read = read(fd, &newChar, 1))) {
-    if (length >= buffer_size) {
+    if (length >= BUFFER_SIZE) {
       fprintf(stderr, "ERROR: Packet too large\n");
       exit(-1); 
       break;
@@ -251,11 +208,10 @@ void handleHTTPRequest(int fd) {
     }
   }
 
-  // timespec_get(&end, TIME_UTC);
+  timespec_get(&end, TIME_UTC);
 
-  // long double time_elapsed = (long double) (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) / 1000000000.0;
-  // fprintf(stderr, "Total Time Taken: %Lf\n", time_elapsed);
-
+  long double time_elapsed = (long double) (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) / 1000000000.0;
+  fprintf(stderr, "Total Time Taken: %Lf\n", time_elapsed);
 
   puts("END REACHED");
   // fprintf(stdout, "Buffer: %s", buffer);
@@ -295,6 +251,25 @@ void handleHTTPRequest(int fd) {
   }
 
   fprintf(stderr, "Handshake completed\n");
+}
+
+void handleWSFrame(int fd) {
+  char buffer[BUFFER_SIZE + 1] = {0};
+  int length = 0;
+
+  size_t bytes_read;
+  unsigned char newChar;
+
+  while ((bytes_read = read(fd, &newChar, 1))) {
+    if (length >= BUFFER_SIZE) {
+      fprintf(stderr, "ERROR: Exceeded buffer size\n");
+      exit(-1);
+      break;
+    }
+    buffer[length++] = newChar;
+    fprintf(stdout, "%c", newChar);
+  }
+
 }
 
 client_session_t *get_session(int fd) {
@@ -343,6 +318,10 @@ int main() {
   int optval = 1;
   int err = setsockopt(masterSocket, SOL_SOCKET, SO_REUSEADDR,
                        (char *) &optval, sizeof(int));
+  if (err) {
+    perror("setsockopt");
+    exit(-1);
+  }
 
   int error = bind(masterSocket, (struct sockaddr *) &serverIPAddress,
                    sizeof(serverIPAddress));
@@ -366,70 +345,78 @@ int main() {
     if (ready) fprintf(stderr, "%d file descriptor(s) ready\n", ready);
 
     for (int i = 0; i < MAX_SESSIONS; i++) {
+      if (!(fds[i].revents & (POLLIN | POLLHUP | POLLERR))) {
+        continue;
+      }
+
       int slaveSocket = -1;
-      if (fds[i].revents & POLLIN) {
-        puts("GOT SOMETHING");
-        if (fds[i].fd == masterSocket) {
-          /* New incoming connection
-           * Accept incoming connection
-           */
-          struct sockaddr_in clientAddress;
-          char clientAddress_string[INET_ADDRSTRLEN];
-          int addr_len = sizeof(clientAddress);
-          slaveSocket = accept(masterSocket, (struct sockaddr *) &clientAddress,
-                                   (socklen_t *) &addr_len);
+      puts("GOT SOMETHING");
+      if (fds[i].fd == masterSocket) {
+        /* New incoming connection
+         * Accept incoming connection
+         */
+        struct sockaddr_in clientAddress;
+        char clientAddress_string[INET_ADDRSTRLEN];
+        int addr_len = sizeof(clientAddress);
+        slaveSocket = accept(masterSocket, (struct sockaddr *) &clientAddress,
+                                 (socklen_t *) &addr_len);
 
-          if (!inet_ntop(AF_INET, &clientAddress.sin_addr, clientAddress_string, sizeof(clientAddress_string))) {
-            fprintf(stderr, "Could not print client address\n");
-            close(slaveSocket);
-            continue;
-          }
+        if (!inet_ntop(AF_INET, &clientAddress.sin_addr, clientAddress_string, sizeof(clientAddress_string))) {
+          fprintf(stderr, "Could not print client address\n");
+          close(slaveSocket);
+          continue;
+        }
 
-          if (slaveSocket < 0) {
-            perror("accept");
-            close(slaveSocket);
-            continue;
-          }
+        if (slaveSocket < 0) {
+          perror("accept");
+          close(slaveSocket);
+          continue;
+        }
 
-          fprintf(stdout, "Accept new connection from %s\n", clientAddress_string);
-          fprintf(stderr, "New connection fd: %d\n", slaveSocket);
+        fprintf(stdout, "Accept new connection from %s\n", clientAddress_string);
+        fprintf(stderr, "New connection fd: %d\n", slaveSocket);
 
-          /* Check if number of sessions has been exceeded */
-          if (nsessions == MAX_SESSIONS - 1) {
-            fprintf(stderr, "Max session limit reached\n");
-            close(slaveSocket);
-            continue;
-          }
+        /* Check if number of sessions has been exceeded */
+        if (nsessions == MAX_SESSIONS - 1) {
+          fprintf(stderr, "Max session limit reached\n");
+          close(slaveSocket);
+          continue;
+        }
 
-          /* Allocate new entry in the fds and sessions arrays */
-          int j;
-          for (j = 0; j < MAX_SESSIONS; j++) {
-            if (fds[j].fd == -1) {
-              fds[j].fd = slaveSocket;
-              fds[j].events = POLLIN;
-              fds[j].revents = 0;
-              sessions[nsessions].fd = slaveSocket;
-              sessions[nsessions].state = STATE_OPENING;
-              fprintf(stderr, "Created new session, sessions[%d].fd=%d, sessions[%d].state=%d\n", nsessions, sessions[nsessions].fd, nsessions, sessions[nsessions].state);
-              nsessions++;
-              fprintf(stderr, "Placed file descriptor %d at fds[%d]\n", slaveSocket, j);
-              break;
-            }
+        /* Allocate new entry in the fds and sessions arrays */
+        int j;
+        for (j = 0; j < MAX_SESSIONS; j++) {
+          if (fds[j].fd == -1) {
+            fds[j].fd = slaveSocket;
+            fds[j].events = POLLIN;
+            fds[j].revents = 0;
+            sessions[nsessions].fd = slaveSocket;
+            sessions[nsessions].state = STATE_OPENING;
+            fprintf(stderr, "Created new session, sessions[%d].fd=%d, sessions[%d].state=%d\n", nsessions, sessions[nsessions].fd, nsessions, sessions[nsessions].state);
+            nsessions++;
+            fprintf(stderr, "Placed file descriptor %d at fds[%d]\n", slaveSocket, j);
+            break;
           }
         }
-        else {
-          client_session_t *session = get_session(fds[i].fd);
-          if (session->state == STATE_OPENING) {
-            handleHTTPRequest(fds[i].fd);
-            session->state = STATE_CLOSING;
-          }
-          else if (session->state == STATE_CLOSING) {
-            send_close_frame(fds[i].fd);
-            shutdown(fds[i].fd, SHUT_RDWR);
-            close(fds[i].fd);
-            fds[i].fd = -1;
-            nsessions--;
-          }
+      }
+      else {
+        client_session_t *session = get_session(fds[i].fd);
+        if (session->state == STATE_OPENING) {
+          time_t now;
+          time(&now);
+          fprintf(stderr, "Started handling opening handshake at: %s\n", ctime(&now));
+          handleHTTPRequest(fds[i].fd);
+          session->state = STATE_CLOSING;
+        }
+        else if (session->state == STATE_CLOSING) {
+          time_t now;
+          time(&now);
+          fprintf(stderr, "Started handling closing handshake at: %s\n", ctime(&now));
+          send_close_frame(fds[i].fd);
+          shutdown(fds[i].fd, SHUT_RDWR);
+          close(fds[i].fd);
+          fds[i].fd = -1;
+          nsessions--;
         }
       }
     }

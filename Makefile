@@ -1,5 +1,5 @@
 CC=gcc
-FLAGS=-Wall -Werr -Wextra -I/opt/homebrew/opt/openssl@3/include -L/opt/homebrew/opt/openssl@3/lib -lssl -lcrypto -g
+FLAGS=-Wall -Wextra -I/opt/homebrew/opt/openssl@3/include -L/opt/homebrew/opt/openssl@3/lib -lssl -lcrypto -g -Ofast
 
 SERVER=ws_server
 
